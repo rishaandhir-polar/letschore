@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Let's Chore | Premium Chore Tracking</title>
+    <meta name="description" content="Manage your household chores with ease and elegance.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="index.css">
+    <link rel="icon" href="data:;base64,iVBORw0KGgo=">
+</head>
+
+<body>
+    <div id="auth-container" class="app-container"
+        style="display: none; align-items: center; justify-content: center; height: 100vh;">
+        <div class="glass-card" style="text-align: center; padding: 3rem;">
+            <h1 class="logo">Let's Chore</h1>
+            <p class="subtitle" style="margin-bottom: 2rem;">Secure Family Sync</p>
+            <button id="google-login-btn"
+                style="background: var(--accent-gradient); border: none; padding: 1rem 2rem; color: white; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 1.1rem;">Login
+                As Admin</button>
+        </div>
+    </div>
+    <div id="app" class="app-container" style="display: none;">
+        <header>
+            <div class="header-top">
+                <h1 class="logo" style="margin: 0;">Let's Chore</h1>
+                <div class="header-actions">
+                    <span id="role-indicator">ROLE</span>
+                    <button id="reset-invite-btn" title="Reset Invite Link" class="danger-btn">Reset
+                        Link</button>
+                    <button id="invite-btn" title="Copy Invite Link" class="accent-btn">Invite Kid</button>
+                    <button id="admin-invite-btn" title="Invite Co-Parent" class="admin-btn">Invite Admin</button>
+                    <button id="logout-btn" class="outline-btn">Logout</button>
+                </div>
+            </div>
+            <div id="bank-display" class="bank-card" style="margin-top: 1rem;">
+                <span class="bank-label">Parents Owe:</span>
+                <span id="bank-total" class="bank-amount">$0.00</span>
+            </div>
+            <div class="theme-switcher">
+                <button class="theme-dot cyber active" data-theme="cyber" title="Cyber Purple"></button>
+                <button class="theme-dot emerald" data-theme="emerald" title="Emerald Guardian"></button>
+                <button class="theme-dot sunset" data-theme="sunset" title="Sunset Bounty"></button>
+                <button class="theme-dot midnight" data-theme="midnight" title="Midnight Deep"></button>
+                <button class="theme-dot light" data-theme="light" title="Arctic Light"></button>
+            </div>
+            <p class="subtitle">Complete chores to earn your bounty.</p>
+        </header>
+
+        <main>
+            <section class="add-chore-section">
+                <form id="add-chore-form" class="glass-card">
+                    <input type="text" id="chore-input" placeholder="What needs to be done?" required
+                        aria-label="Chore name">
+                    <input type="text" id="chore-assignee" placeholder="Assignee (e.g. kid's name)"
+                        aria-label="Assignee"
+                        style="margin-top: 10px; width: 100%; border: 1px solid rgba(255, 255, 255, 0.1); background: rgba(0, 0, 0, 0.2); color: var(--text-primary); padding: 0.8rem; border-radius: 8px;">
+                    <div class="form-inputs">
+                        <input type="number" id="chore-value" placeholder="$ price" step="0.01" min="0"
+                            aria-label="Chore bounty">
+                        <select id="priority-select" aria-label="Chore priority">
+                            <option value="low">Low</option>
+                            <option value="medium" selected>Medium</option>
+                            <option value="high">High</option>
+                        </select>
+                    </div>
+                    <div class="scheduling-section"
+                        style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
+                        <label
+                            style="font-size: 0.9rem; color: var(--text-secondary); display: block; margin-bottom: 8px;">Scheduled
+                            Days (Optional)</label>
+                        <div class="day-picker" id="add-day-picker" style="display: flex; gap: 5px; flex-wrap: wrap;">
+                            <label class="day-chip"><input type="checkbox" value="0"><span>Sun</span></label>
+                            <label class="day-chip"><input type="checkbox" value="1"><span>Mon</span></label>
+                            <label class="day-chip"><input type="checkbox" value="2"><span>Tue</span></label>
+                            <label class="day-chip"><input type="checkbox" value="3"><span>Wed</span></label>
+                            <label class="day-chip"><input type="checkbox" value="4"><span>Thu</span></label>
+                            <label class="day-chip"><input type="checkbox" value="5"><span>Fri</span></label>
+                            <label class="day-chip"><input type="checkbox" value="6"><span>Sat</span></label>
+                        </div>
+                        <label
+                            style="font-size: 0.9rem; color: var(--text-secondary); display: block; margin-top: 15px; margin-bottom: 8px;">Auto-Resurrect
+                            After Completion (Optional)</label>
+                        <div class="refresh-specs" style="justify-content: flex-start;">
+                            <div class="refresh-input-group" title="Days">
+                                <input type="number" id="refresh-days" placeholder="0d" min="0" aria-label="Days">
+                            </div>
+                            <div class="refresh-input-group" title="Hours">
+                                <input type="number" id="refresh-hours" placeholder="0h" min="0" max="23"
+                                    aria-label="Hours">
+                            </div>
+                            <div class="refresh-input-group" title="Minutes">
+                                <input type="number" id="refresh-minutes" placeholder="0m" min="0" max="59"
+                                    aria-label="Minutes">
+                            </div>
+                        </div>
+                    </div>
+                    <button type="submit" id="add-btn" style="margin-top: 15px;">Add Task</button>
+                </form>
+            </section>
+
+            <section class="chore-list-section">
+                <div class="list-controls">
+                    <div class="search-container">
+                        <input type="text" id="chore-search" placeholder="Search tasks..." aria-label="Search chores">
+                        <span class="search-icon">🔍</span>
+                    </div>
+                    <div class="filters">
+                        <button class="filter-btn active" data-filter="all">All</button>
+                        <button class="filter-btn" data-filter="todo">To Do</button>
+                        <button class="filter-btn" data-filter="done">Done</button>
+                    </div>
+                </div>
+                <ul id="chore-list" class="chore-list">
+                    <!-- Chores will be rendered here -->
+                </ul>
+            </section>
+            <section class="chore-history-section">
+                <h2 class="section-title">Bounty Log</h2>
+                <ul id="history-list" class="history-list">
+                    <!-- History will be rendered here -->
+                </ul>
+            </section>
+        </main>
+
+        <footer class="app-stats">
+            <div class="stats-header">
+                <div id="completion-stats">0% Completed</div>
+                <button id="reset-data" class="reset-btn" title="Clear all data">Reset All</button>
+            </div>
+            <div class="progress-bar-container">
+                <div id="progress-bar" class="progress-bar" style="width: 0%"></div>
+            </div>
+            <div id="status-line" class="status-line">System Live</div>
+        </footer>
+
+        <div id="modal-container" class="modal-overlay hidden"></div>
+        <div id="edit-modal-container" class="modal-overlay hidden">
+            <div class="modal-content glass-card">
+                <div class="modal-header">
+                    <div class="modal-icon">✏️</div>
+                    <h2>Edit Task</h2>
+                </div>
+                <form id="edit-chore-form">
+                    <div class="modal-body">
+                        <input type="text" id="edit-chore-title" placeholder="What needs to be done?" required
+                            class="modal-input">
+                        <input type="text" id="edit-chore-assignee" placeholder="Assignee" class="modal-input"
+                            style="margin-top: 10px;">
+                        <div class="edit-grid">
+                            <div class="edit-row">
+                                <label>Bounty ($)</label>
+                                <input type="number" id="edit-chore-value" step="0.01" min="0">
+                            </div>
+                            <div class="edit-row">
+                                <label>Priority</label>
+                                <select id="edit-priority">
+                                    <option value="low">Low</option>
+                                    <option value="medium">Medium</option>
+                                    <option value="high">High</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="edit-section">
+                            <label>Scheduled Days (Optional)</label>
+                            <div class="day-picker" id="edit-day-picker"
+                                style="display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 15px;">
+                                <label class="day-chip"><input type="checkbox" value="0"><span>Sun</span></label>
+                                <label class="day-chip"><input type="checkbox" value="1"><span>Mon</span></label>
+                                <label class="day-chip"><input type="checkbox" value="2"><span>Tue</span></label>
+                                <label class="day-chip"><input type="checkbox" value="3"><span>Wed</span></label>
+                                <label class="day-chip"><input type="checkbox" value="4"><span>Thu</span></label>
+                                <label class="day-chip"><input type="checkbox" value="5"><span>Fri</span></label>
+                                <label class="day-chip"><input type="checkbox" value="6"><span>Sat</span></label>
+                            </div>
+
+                            <label>Auto-Resurrect After Completion:</label>
+                            <div class="refresh-specs" style="justify-content: flex-start; margin-top: 8px;">
+                                <div class="refresh-input-group" title="Days">
+                                    <input type="number" id="edit-refresh-days" placeholder="0d" min="0">
+                                </div>
+                                <div class="refresh-input-group" title="Hours">
+                                    <input type="number" id="edit-refresh-hours" placeholder="0h" min="0" max="23">
+                                </div>
+                                <div class="refresh-input-group" title="Minutes">
+                                    <input type="number" id="edit-refresh-minutes" placeholder="0m" min="0" max="59">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-actions">
+                        <button type="button" id="edit-cancel" class="cancel-btn">Cancel</button>
+                        <button type="submit" class="confirm-btn">Save Changes</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <div id="toast-container" class="toast-container"></div>
+    </div>
+    <script type="module" src="app.js"></script>
+</body>
+
+</html>
