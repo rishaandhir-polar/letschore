@@ -15,6 +15,7 @@ export class ChoreEvents {
         this.bindSearch();
         this.bindReset();
         this.bindThemeSwitcher();
+        this.bindPayment();
         this.applyTheme(this.store.getTheme());
 
         const user = this.authService ? this.authService.getUser() : null;
@@ -88,6 +89,29 @@ export class ChoreEvents {
         });
     }
 
+    bindPayment() {
+        const payBtn = document.getElementById('pay-kid-btn');
+        if (!payBtn) return;
+
+        payBtn.addEventListener('click', async () => {
+            const amount = await this.uiSystem.prompt(
+                'Log Payment',
+                'How much did you pay the kids?',
+                '0.00',
+                'number'
+            );
+
+            if (amount !== null && amount !== '') {
+                const numericAmount = parseFloat(amount);
+                if (numericAmount > 0) {
+                    await this.store.payAmount(numericAmount);
+                    this.uiSystem.notify('Payment Logged', `Logged a payment of $${numericAmount.toFixed(2)}.`);
+                    this.refresh(true);
+                }
+            }
+        });
+    }
+
     bindForm() {
         const form = document.getElementById('add-chore-form');
         const input = document.getElementById('chore-input');
@@ -114,6 +138,10 @@ export class ChoreEvents {
             const m = minutesInput.value || 0;
 
             if (title) {
+                if (this.containsProfanity(title) || (assignee && this.containsProfanity(assignee))) {
+                    this.uiSystem.notify('Content Blocked', 'Please use kind language. Profanity is not allowed.');
+                    return;
+                }
                 this.store.addChore(title, assignee, scheduledDays, priority.value, value, d, h, m);
                 input.value = '';
                 if (assigneeInput) assigneeInput.value = '';
@@ -135,11 +163,16 @@ export class ChoreEvents {
             if (!item) return;
 
             const id = item.dataset.id;
-            const dayIndex = item.dataset.day ? parseInt(item.dataset.day) : null;
+            const dayIndex = item.dataset.day !== undefined ? parseInt(item.dataset.day) : null;
             const chore = this.store.getChores().find(c => c.id === id);
 
             if (e.target.classList.contains('chore-checkbox')) {
-                this.store.toggleChore(id, dayIndex);
+                const comment = await this.uiSystem.prompt('Closing Note', 'Add a comment about this task (optional):', 'e.g. Done!', 'text');
+                if (comment && this.containsProfanity(comment)) {
+                    this.uiSystem.notify('Content Blocked', 'Nice work, but please use kind language in your note.');
+                    return;
+                }
+                this.store.toggleChore(id, dayIndex, comment);
                 // Re-calculating status for notification
                 const updatedChore = this.store.getChores().find(c => c.id === id);
                 const dailyStatus = (dayIndex !== null && updatedChore.statusByDay) ? updatedChore.statusByDay[dayIndex] : updatedChore.status;
@@ -153,8 +186,13 @@ export class ChoreEvents {
                 this.uiSystem.notify('Approved!', `Approved "${chore.title}" and paid $${chore.value.toFixed(2)}.`);
                 this.refresh(true);
             } else if (e.target.classList.contains('reject-btn')) {
+                const comment = await this.uiSystem.prompt('Reason for Rejection', 'Why is this task not approved?', 'e.g. Missed a spot', 'text');
+                if (comment && this.containsProfanity(comment)) {
+                    this.uiSystem.notify('Content Blocked', 'Please use professional language in rejection notes.');
+                    return;
+                }
                 const targetName = chore.assignee ? `sent back to ${chore.assignee}.` : 'sent back to To-Do.';
-                this.store.rejectChore(id, dayIndex);
+                this.store.rejectChore(id, dayIndex, comment);
                 this.uiSystem.notify('Task Rejected', `"${chore.title}" ${targetName}`);
                 this.refresh(true);
             } else if (e.target.classList.contains('delete-btn')) {
@@ -169,6 +207,52 @@ export class ChoreEvents {
                 this.store.cloneChore(id);
                 this.refresh(true);
                 this.uiSystem.notify('Task Cloned', `Created a copy of "${chore.title}".`);
+            } else if (e.target.classList.contains('comment-edit-btn')) {
+                const bubble = e.target.closest('.comment-bubble');
+                const commentId = bubble.dataset.commentId;
+                const choreComments = (dayIndex !== null && chore.commentsByDay) ? (chore.commentsByDay[dayIndex] || []) : (chore.comments || []);
+                const comment = choreComments.find(c => c.id === commentId);
+
+                const newText = await this.uiSystem.prompt('Edit Comment', 'Update your note:', comment.text, 'text');
+                if (newText !== null && newText !== '') {
+                    if (this.containsProfanity(newText)) {
+                        this.uiSystem.notify('Content Blocked', 'Please keep your comments kind.');
+                        return;
+                    }
+                    await this.store.updateComment(id, commentId, newText, dayIndex);
+                    this.refresh(true);
+                }
+            } else if (e.target.classList.contains('comment-delete-btn')) {
+                const bubble = e.target.closest('.comment-bubble');
+                const commentId = bubble.dataset.commentId;
+                const confirmed = await this.uiSystem.confirm('Delete this comment?');
+                if (confirmed) {
+                    await this.store.deleteComment(id, commentId, dayIndex);
+                    this.refresh(true);
+                }
+            } else if (e.target.classList.contains('add-comment-inline-btn')) {
+                const text = await this.uiSystem.prompt(
+                    'Add Comment',
+                    'Share your thoughts on this task:',
+                    'e.g. Almost done!',
+                    'text'
+                );
+                if (text !== null && text.trim() !== '') {
+                    if (this.containsProfanity(text)) {
+                        this.uiSystem.notify('Content Blocked', 'Please use kind language. Profanity is not allowed.');
+                        return;
+                    }
+                    await this.store.addComment(id, text, dayIndex);
+                    this.refresh(true);
+                }
+            } else if (e.target.classList.contains('toggle-comments-btn')) {
+                const threadId = `${id}-${dayIndex ?? 'all'}`;
+                if (this.renderer.expandedThreads.has(threadId)) {
+                    this.renderer.expandedThreads.delete(threadId);
+                } else {
+                    this.renderer.expandedThreads.add(threadId);
+                }
+                this.refresh(true);
             }
         });
 
@@ -200,6 +284,11 @@ export class ChoreEvents {
                     minutes: parseInt(document.getElementById('edit-refresh-minutes').value) || 0
                 }
             };
+
+            if (this.containsProfanity(updates.title) || (updates.assignee && this.containsProfanity(updates.assignee))) {
+                this.uiSystem.notify('Content Blocked', 'Please use kind language. Profanity is not allowed.');
+                return;
+            }
 
             this.store.updateChore(id, updates);
             this.closeEditModal();
@@ -300,5 +389,14 @@ export class ChoreEvents {
         const stats = this.store.getStats();
         const history = this.store.getHistory();
         this.renderer.render(chores, stats, history);
+    }
+
+    containsProfanity(text) {
+        if (!text) return false;
+        const badWords = ['fuck', 'shit', 'ass', 'bitch', 'damn', 'hell', 'bastard', 'crap'];
+        return badWords.some(word => {
+            const regex = new RegExp(`\\b${word}\\b`, 'gi');
+            return regex.test(text);
+        });
     }
 }

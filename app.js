@@ -20,9 +20,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Routing Logic
     authService.onAuthStateChanged((user) => {
-        if (!user) {
+        const hasAdminInvite = !!authService.adminInviteCode;
+
+        if (!user || (user.isAnonymous && hasAdminInvite)) {
             authContainer.style.display = 'flex';
             appContainer.style.display = 'none';
+
+            // Specialized message if they came from an admin link
+            const title = authContainer.querySelector('h1');
+            const subtitle = authContainer.querySelector('.subtitle');
+            if (hasAdminInvite) {
+                subtitle.textContent = "You've been invited as an Admin!";
+                subtitle.style.color = "var(--accent)";
+            } else {
+                subtitle.textContent = "Secure Family Sync";
+                subtitle.style.color = "var(--text-secondary)";
+            }
         } else {
             authContainer.style.display = 'none';
             appContainer.style.display = 'flex';

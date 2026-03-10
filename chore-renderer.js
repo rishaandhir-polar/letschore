@@ -6,6 +6,8 @@ export class ChoreRenderer {
         this.bankElement = bankElement;
         this.historyListElement = historyListElement;
         this.authService = authService;
+        this.payBtn = document.getElementById('pay-kid-btn');
+        this.expandedThreads = new Set(); // Track which threads are expanded (choreId-dayIndex)
     }
 
     render(chores, stats, historyData = []) {
@@ -68,15 +70,19 @@ export class ChoreRenderer {
 
         historyData.forEach(item => {
             const li = document.createElement('li');
-            li.className = 'history-item';
-            const time = new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            li.className = `history-item ${item.type === 'payment' ? 'payment' : 'earning'}`;
+            // Added date to history item
+            const dateStr = new Date(item.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' });
+            const timeStr = new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+            const operator = item.value >= 0 ? '+' : '';
 
             li.innerHTML = `
                 <div class="history-info">
-                    <strong>${this.escapeHtml(item.title)}</strong>
-                    <div class="history-time">${time}</div>
+                    <strong>${this.filterAndEscape(item.title)}</strong>
+                    <div class="history-time">${dateStr} @ ${timeStr}</div>
                 </div>
-                <div class="history-amount">+$${item.value.toFixed(2)}</div>
+                <div class="history-amount">${operator}$${Math.abs(item.value).toFixed(2)}</div>
             `;
             this.historyListElement.appendChild(li);
         });
@@ -100,6 +106,8 @@ export class ChoreRenderer {
 
     createChoreElement(chore, isAdmin, targetDayIndex = null) {
         const li = document.createElement('li');
+        const authUser = this.authService ? this.authService.getUser() : null;
+        const user = authUser || { uid: 'anonymous', isAnonymous: true, displayName: 'Kid' };
 
         let dailyStatus = chore.status;
         if (targetDayIndex !== null) {
@@ -163,20 +171,68 @@ export class ChoreRenderer {
             trailingActions = ``;
         }
 
-        li.innerHTML = `
-            ${leadingAction}
-            <div class="chore-icon-wrapper">${icon}</div>
-            <div class="chore-content">
-                <h3 class="chore-title">${this.escapeHtml(chore.title)}</h3>
-                <div class="chore-meta">
-                    <span class="chore-value-badge">$${chore.value.toFixed(2)}</span>
-                    ${chore.assignee ? `<span class="chore-refresh-badge assignee-badge">👤 ${this.escapeHtml(chore.assignee)}</span>` : ''}
-                    ${scheduledStr ? `<span class="chore-refresh-badge scheduled-badge">📅 ${scheduledStr}</span>` : ''}
-                    ${refreshStr ? `<span class="chore-refresh-badge">${refreshStr}</span>` : ''}
-                    <span class="chore-badge badge-${chore.priority}">${chore.priority}</span>
+        // Render comments
+        const commentsArr = (targetDayIndex !== null && chore.commentsByDay)
+            ? (chore.commentsByDay[targetDayIndex] || chore.commentsByDay[String(targetDayIndex)] || [])
+            : (chore.comments || []);
+
+        const threadId = `${chore.id}-${targetDayIndex ?? 'all'}`;
+        const isExpanded = this.expandedThreads.has(threadId);
+
+        const commentsHtml = `
+            <div class="chore-comments" style="display: flex !important; visibility: visible !important;">
+                <div class="comments-header">
+                    <span style="font-size: 0.75rem; font-weight: 600; color: var(--text-secondary);">
+                        ${commentsArr.length} Comment${commentsArr.length !== 1 ? 's' : ''}
+                    </span>
+                    ${commentsArr.length > 0 ? `
+                        <button class="toggle-comments-btn">${isExpanded ? 'Collapse' : 'Expand'}</button>
+                    ` : ''}
                 </div>
+                
+                <div class="comments-thread ${isExpanded ? 'expanded' : 'collapsed'}" ${!isExpanded ? 'style="display: none;"' : ''}>
+                    ${commentsArr.length > 0 ? commentsArr.map((comment, index) => {
+            const isAuthor = user && user.uid === comment.authorId;
+            const isLast = index === commentsArr.length - 1;
+            const time = new Date(comment.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+            return `
+                            <div class="comment-bubble" data-comment-id="${comment.id}">
+                                <div class="comment-author" style="color: ${comment.authorName === 'Kid' ? '#40c4ff' : 'var(--accent)'}">${this.filterAndEscape(comment.authorName)}</div>
+                                <div class="comment-text">${this.filterAndEscape(comment.text)}</div>
+                                <div class="comment-meta">
+                                    <span>${time}</span>
+                                    ${isAuthor && isLast && !isDone ? `
+                                        <div class="comment-actions">
+                                            <button class="comment-edit-btn" title="Edit Comment">Edit</button>
+                                            <button class="comment-delete-btn" title="Delete Comment">Delete</button>
+                                        </div>
+                                    ` : ''}
+                                </div>
+                            </div>
+                        `;
+        }).join('') : '<div style="font-size: 0.75rem; color: var(--text-secondary); opacity: 0.7; font-style: italic;">Be the first to comment!</div>'}
+                </div>
+                ${!isDone ? `<button class="add-comment-inline-btn" style="margin-top: 0.5rem;">+ Add Comment</button>` : ''}
             </div>
-            ${trailingActions ? `<div class="chore-actions">${trailingActions}</div>` : ''}
+        `;
+
+        li.innerHTML = `
+            <div style="display: flex; align-items: center; width: 100%; gap: 1rem; margin-bottom: 0.5rem;">
+                ${leadingAction}
+                <div class="chore-icon-wrapper">${icon}</div>
+                <div class="chore-content">
+                    <h3 class="chore-title">${this.filterAndEscape(chore.title)}</h3>
+                    <div class="chore-meta">
+                        <span class="chore-value-badge">$${chore.value.toFixed(2)}</span>
+                        ${chore.assignee ? `<span class="chore-refresh-badge assignee-badge">👤 ${this.filterAndEscape(chore.assignee)}</span>` : ''}
+                        ${scheduledStr ? `<span class="chore-refresh-badge scheduled-badge">📅 ${scheduledStr}</span>` : ''}
+                        ${refreshStr ? `<span class="chore-refresh-badge">${refreshStr}</span>` : ''}
+                        <span class="chore-badge badge-${chore.priority}">${chore.priority}</span>
+                    </div>
+                </div>
+                ${trailingActions ? `<div class="chore-actions">${trailingActions}</div>` : ''}
+            </div>
+            ${commentsHtml}
         `;
 
         return li;
@@ -188,6 +244,16 @@ export class ChoreRenderer {
         if (this.bankElement) {
             this.bankElement.textContent = `$${stats.totalOwed.toFixed(2)}`;
         }
+
+        const user = this.authService ? this.authService.getUser() : null;
+        const isAdmin = user && !user.isAnonymous;
+        if (this.payBtn) {
+            this.payBtn.style.display = isAdmin ? 'block' : 'none';
+        }
+    }
+
+    filterAndEscape(text) {
+        return this.escapeHtml(text || '');
     }
 
     escapeHtml(text) {

@@ -57,9 +57,11 @@ export class AuthService {
 
         return new Promise(resolve => {
             // Give auth a moment to resolve
-            const unsubscribe = onAuthStateChanged(auth, (user) => {
-                unsubscribe();
-                resolve(user);
+            let unsubscribe;
+            unsubscribe = onAuthStateChanged(auth, (user) => {
+                if (unsubscribe) unsubscribe();
+                this.notify(user); // Ensure this.user is processed
+                resolve(this.user);
             });
         });
     }

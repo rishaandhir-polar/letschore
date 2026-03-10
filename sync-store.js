@@ -1,22 +1,28 @@
-import { db, collection, doc, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, where } from './firebase-config.js';
+import { db, collection, doc, setDoc, updateDoc, onSnapshot, query, orderBy, where } from './firebase-config.js';
+import { SyncStoreChores } from './sync-store-chores.js';
+import { SyncStoreAdmin } from './sync-store-admin.js';
+import { SyncStoreRefresh } from './sync-store-refresh.js';
 
 export class SyncStore {
     constructor(authService) {
         this.authService = authService;
         this.subscribers = [];
-
         this.chores = [];
         this.wallet = 0;
         this.history = [];
-
         this.unsubscribeChores = null;
         this.unsubscribeData = null;
 
-        this.authService.onAuthStateChanged((user) => {
-            this._loadDataForUser(user);
-        });
+        this.choresModule = new SyncStoreChores(this);
+        this.adminModule = new SyncStoreAdmin(this);
+        this.refreshModule = new SyncStoreRefresh(this);
 
-        this._loadDataForUser(this.authService.getUser());
+        this.authService.onAuthStateChanged((user) => this._loadDataForUser(user));
+        // Only load if user is already available, otherwise wait for listener
+        const initialUser = this.authService.getUser();
+        if (initialUser) {
+            this._loadDataForUser(initialUser);
+        }
     }
 
     _loadDataForUser(user) {
@@ -24,398 +30,159 @@ export class SyncStore {
         if (this.unsubscribeData) this.unsubscribeData();
 
         if (!user) {
-            this.chores = [];
-            this.wallet = 0;
-            this.history = [];
-            this._notify();
+            this.chores = []; this.wallet = 0; this.history = []; this._notify();
             return;
         }
 
         if (user.isAnonymous) {
-            if (!user.invite) {
-                this._loadDataForUser(null);
-                return;
-            }
-            const q = query(collection(db, 'families'), where('inviteCode', '==', user.invite));
-            this.unsubscribeData = onSnapshot(q, (snapshot) => {
-                if (!snapshot.empty) {
-                    const familyDoc = snapshot.docs[0];
-                    const data = familyDoc.data();
-                    this.wallet = data.wallet || 0;
-                    this.history = data.history || [];
-                    this.activeFamilyId = familyDoc.id;
-
-                    if (this.unsubscribeChores) this.unsubscribeChores();
-                    const choresListRef = collection(db, 'families', this.activeFamilyId, 'chores');
-                    this.unsubscribeChores = onSnapshot(query(choresListRef, orderBy('createdAt', 'asc')), (choreSnap) => {
-                        this.chores = choreSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                        this._notify();
-                    });
-                } else {
-                    this.chores = [];
-                    this.activeFamilyId = null;
-                    this._notify();
-                }
-            });
+            this._setupAnonymousSync(user);
         } else {
-            const uid = user.uid;
+            this._setupAdminSync(user);
+        }
+    }
 
-            let familyQuery;
-            if (this.authService.adminInviteCode) {
-                familyQuery = query(collection(db, 'families'), where('inviteCode', '==', this.authService.adminInviteCode));
+    _setupAnonymousSync(user) {
+        if (!user.invite) { this._loadDataForUser(null); return; }
+        const q = query(collection(db, 'families'), where('inviteCode', '==', user.invite));
+        this.unsubscribeData = onSnapshot(q, (snapshot) => {
+            if (!snapshot.empty) {
+                const familyDoc = snapshot.docs[0];
+                this.activeFamilyId = familyDoc.id;
+                this._syncFamilyData(familyDoc.data());
+                this._syncChores();
             } else {
-                familyQuery = query(collection(db, 'families'), where('admins', 'array-contains', uid));
+                this.chores = []; this.activeFamilyId = null; this._notify();
             }
+        });
+    }
 
-            this.unsubscribeData = onSnapshot(familyQuery, (snapshot) => {
+    async _setupAdminSync(user) {
+        const uid = user.uid;
+
+        // 1. If we have an invite code, PRIORITIZE it to "latch" onto the right family
+        if (this.authService.adminInviteCode) {
+            const q = query(collection(db, 'families'), where('inviteCode', '==', this.authService.adminInviteCode));
+            const inviteUnsub = onSnapshot(q, async (snapshot) => {
                 if (!snapshot.empty) {
                     const familyDoc = snapshot.docs[0];
                     this.activeFamilyId = familyDoc.id;
                     const data = familyDoc.data();
 
-                    if (this.authService.adminInviteCode) {
-                        const admins = data.admins || [];
-                        if (!admins.includes(uid)) {
-                            updateDoc(doc(db, 'families', this.activeFamilyId), {
-                                admins: [...admins, uid]
-                            });
-                        }
-                        this.authService.clearAdminInvite();
-                    }
+                    // Add ourselves to the admins array immediately
+                    await this._ensureAdmin(uid, data.admins);
 
-                    this.wallet = data.wallet || 0;
-                    this.history = data.history || [];
-                    this.inviteCode = data.inviteCode;
+                    // Clear the code and KILL THIS SUBSCRIBER
+                    this.authService.clearAdminInvite();
+                    inviteUnsub();
 
-                    if (this.unsubscribeChores) this.unsubscribeChores();
-                    const choresListRef = collection(db, 'families', this.activeFamilyId, 'chores');
-                    this.unsubscribeChores = onSnapshot(query(choresListRef, orderBy('createdAt', 'asc')), (choreSnap) => {
-                        this.chores = choreSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                        this._notify();
-                    });
-                    this._notify();
+                    // Switch to main listener
+                    this._setupAdminSync(user);
                 } else {
-                    if (this.authService.adminInviteCode) {
-                        this.authService.clearAdminInvite();
-                        this._loadDataForUser(user);
-                        return;
-                    }
-
-                    this.activeFamilyId = uid;
-                    const familyDocRef = doc(db, 'families', uid);
-
-                    if (this.unsubscribeData) this.unsubscribeData();
-
-                    this.unsubscribeData = onSnapshot(familyDocRef, (docSnap) => {
-                        let data = docSnap.exists() ? docSnap.data() : { wallet: 0, history: [] };
-                        this.wallet = data.wallet || 0;
-                        this.history = data.history || [];
-                        this.inviteCode = data.inviteCode || crypto.randomUUID().split('-')[0];
-
-                        const admins = data.admins || [];
-                        if (!admins.includes(uid)) {
-                            setDoc(familyDocRef, { ...data, inviteCode: this.inviteCode, admins: [...admins, uid] }, { merge: true });
-                        }
-
-                        if (this.unsubscribeChores) this.unsubscribeChores();
-                        const choresListRef = collection(familyDocRef, 'chores');
-                        this.unsubscribeChores = onSnapshot(query(choresListRef, orderBy('createdAt', 'asc')), (choreSnap) => {
-                            this.chores = choreSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                            this._notify();
-                        });
-                        this._notify();
-                    });
+                    // Invalid code, clear it and fallback
+                    this.authService.clearAdminInvite();
+                    inviteUnsub();
+                    this._setupAdminSync(user);
                 }
             });
-        }
-    }
-
-    async _updateFamilyData(updates) {
-        if (!this.activeFamilyId) return;
-        const familyDocRef = doc(db, 'families', this.activeFamilyId);
-        await updateDoc(familyDocRef, updates);
-    }
-
-    async resetInviteCode() {
-        if (!this.activeFamilyId) return;
-        const newCode = crypto.randomUUID().split('-')[0];
-        await this._updateFamilyData({ inviteCode: newCode });
-    }
-
-    getInviteCode() {
-        return this.inviteCode;
-    }
-
-    subscribe(callback) {
-        this.subscribers.push(callback);
-    }
-
-    _notify() {
-        this.subscribers.forEach(cb => cb());
-    }
-
-    getChores() {
-        const priorityMatrix = { 'high': 0, 'medium': 1, 'low': 2 };
-        return [...this.chores].sort((a, b) => {
-            return priorityMatrix[a.priority] - priorityMatrix[b.priority];
-        });
-    }
-
-    async addChore(title, assignee, scheduledDays, priority, value = 0, days = 0, hours = 0, minutes = 0) {
-        if (!this.activeFamilyId) return null;
-
-        const normalizedValue = Math.round(parseFloat(value) * 100) / 100;
-        const intervalMs = (parseInt(days) || 0) * 24 * 3600000 + (parseInt(hours) || 0) * 3600000 + (parseInt(minutes) || 0) * 60000;
-
-        const choreData = {
-            title,
-            assignee: assignee || '',
-            scheduledDays: scheduledDays || [],
-            priority,
-            value: normalizedValue || 0,
-            refreshIntervalMs: intervalMs,
-            refreshConfig: { days: parseInt(days) || 0, hours: parseInt(hours) || 0, minutes: parseInt(minutes) || 0 },
-            status: 'PENDING',
-            createdAt: Date.now(),
-            lastCompletedAt: null
-        };
-
-        const choreRef = doc(collection(doc(db, 'families', this.activeFamilyId), 'chores'));
-        await setDoc(choreRef, choreData);
-
-        return { id: choreRef.id, ...choreData };
-    }
-
-    async toggleChore(id, dayIndex = null) {
-        if (!this.activeFamilyId) return;
-
-        const chore = this.chores.find(c => c.id === id);
-        if (!chore) return;
-
-        let currentStatus;
-        if (dayIndex !== null) {
-            currentStatus = (chore.statusByDay && chore.statusByDay[dayIndex]) ? chore.statusByDay[dayIndex] : 'PENDING';
-        } else {
-            currentStatus = chore.status;
+            this.unsubscribeData = inviteUnsub;
+            return;
         }
 
-        let newStatus = currentStatus === 'PENDING' ? 'PENDING_APPROVAL' : 'PENDING';
+        // 2. Normal Admin Sync (query by explicit admin membership)
+        const q = query(collection(db, 'families'), where('admins', 'array-contains', uid));
 
-        const choreRef = doc(db, 'families', this.activeFamilyId, 'chores', id);
-        if (dayIndex !== null) {
-            await updateDoc(choreRef, {
-                [`statusByDay.${dayIndex}`]: newStatus
-            });
-        } else {
-            await updateDoc(choreRef, { status: newStatus });
-        }
-    }
-
-    async approveChore(id, dayIndex = null) {
-        const user = this.authService.getUser();
-        if (!this.activeFamilyId || !user || user.isAnonymous) return;
-
-        const chore = this.chores.find(c => c.id === id);
-        if (!chore) return;
-
-        let currentStatus;
-        if (dayIndex !== null) {
-            currentStatus = (chore.statusByDay && chore.statusByDay[dayIndex]) ? chore.statusByDay[dayIndex] : 'PENDING';
-        } else {
-            currentStatus = chore.status;
-        }
-
-        if (currentStatus !== 'PENDING_APPROVAL') return;
-
-        const choreRef = doc(db, 'families', this.activeFamilyId, 'chores', id);
-        const now = Date.now();
-
-        if (dayIndex !== null) {
-            await updateDoc(choreRef, {
-                [`statusByDay.${dayIndex}`]: 'APPROVED',
-                [`lastCompletedAtByDay.${dayIndex}`]: now
-            });
-        } else {
-            await updateDoc(choreRef, {
-                status: 'APPROVED',
-                lastCompletedAt: now
-            });
-        }
-
-        const newWallet = Math.max(0, (Math.round(this.wallet * 100) + Math.round(chore.value * 100)) / 100);
-
-        const updatedHistory = [{
-            id: crypto.randomUUID(),
-            choreId: chore.id,
-            title: chore.title,
-            value: chore.value,
-            timestamp: now,
-            approvedBy: user.uid
-        }, ...this.history].slice(0, 50);
-
-        await this._updateFamilyData({
-            wallet: newWallet,
-            history: updatedHistory
-        });
-    }
-
-    async rejectChore(id, dayIndex = null) {
-        if (!this.activeFamilyId) return;
-        const choreRef = doc(db, 'families', this.activeFamilyId, 'chores', id);
-        if (dayIndex !== null) {
-            await updateDoc(choreRef, {
-                [`statusByDay.${dayIndex}`]: 'PENDING'
-            });
-        } else {
-            await updateDoc(choreRef, { status: 'PENDING' });
-        }
-    }
-
-    async deleteChore(id) {
-        if (!this.activeFamilyId) return;
-        const choreRef = doc(db, 'families', this.activeFamilyId, 'chores', id);
-        await deleteDoc(choreRef);
-    }
-
-    async clearAll() {
-        if (!this.activeFamilyId) return;
-
-        const user = this.authService.getUser();
-        if (!user || user.isAnonymous) return;
-
-        // Reset wallet and history
-        await this._updateFamilyData({
-            wallet: 0,
-            history: []
-        });
-
-        // Delete all chores
-        for (const chore of this.chores) {
-            const choreRef = doc(db, 'families', this.activeFamilyId, 'chores', chore.id);
-            await deleteDoc(choreRef);
-        }
-    }
-
-    async updateChore(id, updates) {
-        if (!this.activeFamilyId) return;
-
-        if (updates.refreshConfig) {
-            const { days, hours, minutes } = updates.refreshConfig;
-            updates.refreshIntervalMs = (days * 24 * 3600000) + (hours * 3600000) + (minutes * 60000);
-        }
-
-        const choreRef = doc(db, 'families', this.activeFamilyId, 'chores', id);
-        await updateDoc(choreRef, updates);
-    }
-
-    async cloneChore(id) {
-        if (!this.activeFamilyId) return null;
-
-        const original = this.chores.find(c => c.id === id);
-        if (original) {
-            const cloneData = {
-                ...original,
-                title: `${original.title} (Copy)`,
-                status: 'PENDING',
-                lastCompletedAt: null,
-                createdAt: Date.now()
-            };
-            delete cloneData.id;
-
-            const choreRef = doc(collection(doc(db, 'families', this.activeFamilyId), 'chores'));
-            await setDoc(choreRef, cloneData);
-            return { id: choreRef.id, ...cloneData };
-        }
-        return null;
-    }
-
-    checkRefreshes(currentTime = Date.now()) {
-        const notifications = [];
-        if (!this.activeFamilyId) return notifications;
-
-        const currentDay = new Date(currentTime).getDay();
-        const startOfToday = new Date(currentTime);
-        startOfToday.setHours(0, 0, 0, 0);
-
-        this.chores.forEach(async chore => {
-            const daysToRefresh = (chore.scheduledDays && chore.scheduledDays.length > 0)
-                ? [currentDay]
-                : [null];
-
-            for (const dIdx of daysToRefresh) {
-                let shouldReset = false;
-                const dailyStatus = (dIdx !== null && chore.statusByDay) ? (chore.statusByDay[dIdx] || 'PENDING') : chore.status;
-                const dailyLastCompleted = (dIdx !== null && chore.lastCompletedAtByDay) ? (chore.lastCompletedAtByDay[dIdx] || 0) : (chore.lastCompletedAt || 0);
-
-                if (dailyStatus === 'APPROVED') {
-                    // 1. Timer-based Refresh (only if not scheduled)
-                    if (dIdx === null && chore.refreshIntervalMs > 0 && dailyLastCompleted) {
-                        const timeSince = currentTime - dailyLastCompleted;
-                        if (timeSince >= chore.refreshIntervalMs) {
-                            shouldReset = true;
-                        }
-                    }
-
-                    // 2. Calendar-based Refresh
-                    if (!shouldReset && dIdx !== null) {
-                        if (!dailyLastCompleted || dailyLastCompleted < startOfToday.getTime()) {
-                            shouldReset = true;
-                        }
-                    }
-
-                    if (shouldReset) {
-                        notifications.push(chore.title);
-                        const choreRef = doc(db, 'families', this.activeFamilyId, 'chores', chore.id);
-                        if (dIdx !== null) {
-                            await updateDoc(choreRef, { [`statusByDay.${dIdx}`]: 'PENDING' });
-                        } else {
-                            await updateDoc(choreRef, { status: 'PENDING' });
-                        }
-                    }
-                }
+        this.unsubscribeData = onSnapshot(q, (snapshot) => {
+            if (!snapshot.empty) {
+                const familyDoc = snapshot.docs[0];
+                this.activeFamilyId = familyDoc.id;
+                this._syncFamilyData(familyDoc.data());
+                this._syncChores();
+            } else {
+                // Not an admin anywhere yet. Solo mode.
+                this._initializeNewFamily(uid);
             }
         });
-
-        return notifications;
     }
 
+    _initializeNewFamily(uid) {
+        this.activeFamilyId = uid;
+        const ref = doc(db, 'families', uid);
+        this.unsubscribeData = onSnapshot(ref, (snap) => {
+            const data = snap.exists() ? snap.data() : { wallet: 0, history: [] };
+            this._syncFamilyData(data);
+            const admins = data.admins || [];
+            if (!admins.includes(uid)) setDoc(ref, { ...data, inviteCode: crypto.randomUUID().split('-')[0], admins: [...admins, uid] }, { merge: true });
+            this._syncChores();
+        });
+    }
+
+    _syncFamilyData(data) {
+        this.wallet = data.wallet || 0;
+        this.history = data.history || [];
+        this.inviteCode = data.inviteCode;
+        this._notify();
+    }
+
+    _syncChores() {
+        if (this.unsubscribeChores) this.unsubscribeChores();
+        const ref = collection(db, 'families', this.activeFamilyId, 'chores');
+        this.unsubscribeChores = onSnapshot(query(ref, orderBy('createdAt', 'asc')), (snap) => {
+            this.chores = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            this._notify();
+        });
+    }
+
+    async _ensureAdmin(uid, admins = []) {
+        if (!admins.includes(uid)) {
+            await updateDoc(doc(db, 'families', this.activeFamilyId), { admins: [...admins, uid] });
+        }
+    }
+
+    async _updateFamilyData(updates) { await this.adminModule._updateFamilyData(updates); }
+
+    // Delegation to Modules
+    async addChore(...args) { return this.choresModule.addChore(...args); }
+    async toggleChore(...args) { return this.choresModule.toggleChore(...args); }
+    async approveChore(...args) { return this.choresModule.approveChore(...args); }
+    async rejectChore(...args) { return this.choresModule.rejectChore(...args); }
+    async deleteChore(...args) { return this.choresModule.deleteChore(...args); }
+    async updateChore(...args) { return this.choresModule.updateChore(...args); }
+    async cloneChore(...args) { return this.choresModule.cloneChore(...args); }
+
+    async addComment(...args) { return this.choresModule.addComment(...args); }
+    async updateComment(...args) { return this.choresModule.updateComment(...args); }
+    async deleteComment(...args) { return this.choresModule.deleteComment(...args); }
+
+    async payAmount(amount) { return this.adminModule.payAmount(amount); }
+    async resetInviteCode() { return this.adminModule.resetInviteCode(); }
+    async clearAll() { return this.adminModule.clearAll(); }
+
+    checkRefreshes(time) { return this.refreshModule.checkRefreshes(time); }
+
+    // Subscriptions and Getters
+    subscribe(cb) { this.subscribers.push(cb); }
+    _notify() { this.subscribers.forEach(cb => cb()); }
+    getInviteCode() { return this.inviteCode; }
     getTotalOwed() { return this.wallet; }
     getHistory() { return this.history; }
-
-    setTheme(themeName) {
-        localStorage.setItem('chorely_theme', themeName);
-    }
-
-    getTheme() {
-        return localStorage.getItem('chorely_theme') || 'cyber';
+    setTheme(t) { localStorage.setItem('chorely_theme', t); }
+    getTheme() { return localStorage.getItem('chorely_theme') || 'cyber'; }
+    getChores() {
+        const matrix = { 'high': 0, 'medium': 1, 'low': 2 };
+        return [...this.chores].sort((a, b) => matrix[a.priority] - matrix[b.priority]);
     }
 
     getStats() {
-        const totalCount = this.chores.length;
-        if (totalCount === 0) return { total: 0, completed: 0, pending: 0, percent: 0, totalOwed: this.wallet };
-
+        const total = this.chores.length;
+        if (total === 0) return { total: 0, completed: 0, pending: 0, percent: 0, totalOwed: this.wallet };
         const currentDay = new Date().getDay();
-        let completedCount = 0;
-        let pendingCount = 0;
-
-        this.chores.forEach(chore => {
-            let status;
-            if (chore.scheduledDays && chore.scheduledDays.includes(currentDay)) {
-                status = (chore.statusByDay && chore.statusByDay[currentDay]) ? chore.statusByDay[currentDay] : 'PENDING';
-            } else {
-                status = chore.status;
-            }
-
-            if (status === 'APPROVED') completedCount++;
-            if (status === 'PENDING_APPROVAL') pendingCount++;
+        let completed = 0, pending = 0;
+        this.chores.forEach(c => {
+            const status = (c.scheduledDays && c.scheduledDays.includes(currentDay))
+                ? (c.statusByDay?.[currentDay] || 'PENDING') : c.status;
+            if (status === 'APPROVED') completed++;
+            if (status === 'PENDING_APPROVAL') pending++;
         });
-
-        return {
-            total: totalCount,
-            completed: completedCount,
-            pending: pendingCount,
-            percent: Math.round((completedCount / totalCount) * 100),
-            totalOwed: this.wallet
-        };
+        return { total, completed, pending, percent: Math.round((completed / total) * 100), totalOwed: this.wallet };
     }
 }

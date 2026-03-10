@@ -181,4 +181,19 @@ describe('Store', () => {
         store.checkRefreshes(Date.now() + 95500000);
         expect(store.getChores()[0].completed).toBe(false);
     });
+
+    it('should allow logging a payment to decrement the wallet', () => {
+        store.addChore('Task 1', 'high', 50);
+        store.toggleChore(store.getChores()[0].id); // wallet = 50
+        expect(store.getTotalOwed()).toBe(50);
+
+        store.payAmount(20);
+        expect(store.getTotalOwed()).toBe(30);
+
+        const history = store.getHistory();
+        // Payment should be the first item in history
+        expect(history[0].title).toBe('Payment Received 💸');
+        expect(history[0].value).toBe(-20);
+        expect(history[0].type).toBe('payment');
+    });
 });

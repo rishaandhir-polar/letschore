@@ -90,6 +90,7 @@ export class Store {
                         choreId: chore.id,
                         title: chore.title,
                         value: chore.value,
+                        type: 'earning',
                         timestamp: now
                     });
                     if (this.history.length > 50) this.history.pop();
@@ -184,6 +185,24 @@ export class Store {
 
     getTotalOwed() {
         return this.wallet;
+    }
+
+    payAmount(amount) {
+        const numericAmount = parseFloat(amount) || 0;
+        if (numericAmount <= 0) return;
+
+        this.wallet = Math.max(0, (Math.round(this.wallet * 100) - Math.round(numericAmount * 100)) / 100);
+
+        this.history.unshift({
+            id: crypto.randomUUID(),
+            title: 'Payment Received 💸',
+            value: -numericAmount,
+            type: 'payment',
+            timestamp: Date.now()
+        });
+
+        if (this.history.length > 50) this.history.pop();
+        this._save();
     }
 
     clearAll() {

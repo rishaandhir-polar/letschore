@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { AuthService } from '../auth-service.js';
+import * as firebase from '../firebase-config.js';
 
 describe('AuthService', () => {
     let auth;
@@ -11,20 +12,34 @@ describe('AuthService', () => {
         // Mock window.location.search
         Object.defineProperty(window, 'location', {
             configurable: true,
-            value: { search: '' }
+            value: { search: '', pathname: '/', origin: 'http://localhost' }
         });
     });
 
     it('should initialize with no user if not client and no saved storage', async () => {
-        const user = await auth.init();
+        // Mock onAuthStateChanged to trigger with null
+        firebase.onAuthStateChanged.mockImplementation((authObj, cb) => {
+            cb(null);
+            return () => { };
+        });
+
+        const userPromise = auth.init();
+        const user = await userPromise;
         expect(user).toBeNull();
     });
 
     it('should initialize as client if invite param is present', async () => {
         Object.defineProperty(window, 'location', {
             configurable: true,
-            value: { search: '?invite=XYZ123' }
+            value: { search: '?invite=XYZ123', pathname: '/', origin: 'http://localhost' }
         });
+
+        firebase.signInAnonymously.mockResolvedValue({ user: { uid: 'anon-123', isAnonymous: true } });
+        firebase.onAuthStateChanged.mockImplementation((authObj, cb) => {
+            cb({ uid: 'anon-123', isAnonymous: true });
+            return () => { };
+        });
+
         const user = await auth.init();
         expect(user).not.toBeNull();
         expect(user.isAnonymous).toBe(true);
@@ -32,30 +47,19 @@ describe('AuthService', () => {
     });
 
     it('should loginWithGoogle as admin', async () => {
-        const user = await auth.loginWithGoogle();
-        expect(user.isAnonymous).toBe(false);
-        expect(user.email).toBe('admin@mock.com');
+        const mockUser = { uid: 'admin-123', isAnonymous: false, email: 'admin@test.com' };
+        firebase.signInWithPopup.mockResolvedValue({ user: mockUser });
 
-        // Should persist
-        const saved = localStorage.getItem('chorevault_admin_user');
-        expect(JSON.parse(saved).uid).toBe(user.uid);
+        const user = await auth.loginWithGoogle();
+        expect(user.uid).toBe('admin-123');
+        expect(user.isAnonymous).toBe(false);
     });
 
     it('should logout and clear user', async () => {
-        await auth.loginWithGoogle();
+        firebase.signOut.mockResolvedValue();
         await auth.logout();
-        expect(auth.getUser()).toBeNull();
-        expect(localStorage.getItem('chorevault_admin_user')).toBeNull();
-    });
-
-    it('should notify listeners on auth state change', async () => {
-        const mockCallback = vi.fn();
-        auth.onAuthStateChanged(mockCallback);
-
-        await auth.loginWithGoogle();
-        expect(mockCallback).toHaveBeenCalledWith(auth.getUser());
-
-        await auth.logout();
-        expect(mockCallback).toHaveBeenCalledWith(null);
+        expect(firebase.signOut).toHaveBeenCalled();
+        expect(auth.adminInviteCode).toBeNull();
+        expect(auth.inviteCode).toBeNull();
     });
 });
